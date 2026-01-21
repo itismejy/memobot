@@ -362,7 +362,7 @@ def ingest_data(video_source, index_name="twelve-labs", clip_length=6):
         
         vector_id = f"{video_name}_{option_suffix}"
         metadata = {
-                'video_file': video_name,
+            'video_file': video_name,
             'start_time_sec': start_sec,
             'end_time_sec': end_sec,
             'scope': emb['embedding_scope'],

@@ -39,6 +39,9 @@ MIN_TURN_SEC = 1.0
 TARGET_VP_SEC = 20.0          # build ~20s clip (<=30s)
 MAX_VP_SEC = 30.0
 IDENTIFY_THRESHOLD = 50       # tune per your domain
+MIN_CONFIDENCE_SCORE = 70.0   # minimum identification confidence (0-100) to accept a match, else create new speaker
+                              # Lower values = more permissive (more false matches)
+                              # Higher values = more strict (fewer false matches, more new speakers)
 
 
 # ----------------------------
@@ -134,7 +137,8 @@ def speech_to_text_diarization(audio_media_url: str) -> List[dict]:
         "url": audio_media_url,
         "model": "precision-2",
         "transcription": True,
-        "exclusive": True
+        "exclusive": True,
+        "turnLevelConfidence": True  # Enable turn-level confidence scores
         # optional:
         # "transcriptionConfig": {"model": "faster-whisper-large-v3-turbo"}
     })
@@ -179,10 +183,14 @@ def build_single_speaker_clip_bytes(local_wav_16k: str, turns: List[dict], speak
         concat_wavs(parts, out_clip)
         return Path(out_clip).read_bytes()
 
-def identify_clip(clip_media_url: str, voiceprints: Dict[str, Any]) -> Optional[str]:
+def identify_clip(clip_media_url: str, voiceprints: Dict[str, Any]) -> Optional[Tuple[str, float]]:
     """
     Identify a single-speaker clip against existing voiceprints.
-    Returns matched label, or None.
+    Returns (matched label, confidence score) if confident match found, or None.
+    Only returns a match if confidence meets MIN_CONFIDENCE_SCORE threshold.
+    
+    According to pyannote docs, identification output includes a 'voiceprints' array
+    where each entry has a 'confidence' object with scores per voiceprint label.
     """
     vp_list = [{"label": v["label"], "voiceprint": v["voiceprint"]} for v in voiceprints.values()]
     if not vp_list:
@@ -196,16 +204,49 @@ def identify_clip(clip_media_url: str, voiceprints: Dict[str, Any]) -> Optional[
     })
     out = poll_job(job["jobId"])["output"]
 
-    # For single-speaker clip, take the most frequent non-null match across segments
-    counts: Dict[str, int] = {}
-    for seg in (out.get("identification") or []):
-        m = seg.get("match")
-        if m:
-            counts[m] = counts.get(m, 0) + 1
-
-    if not counts:
+    # According to docs, identification output has a 'voiceprints' array
+    # Each entry: {"speaker": "SPEAKER_00", "match": "John Doe", "confidence": {"John Doe": 86, ...}}
+    # Try both possible response structures
+    voiceprints_result = out.get("voiceprints", [])
+    if not voiceprints_result:
+        # Fallback to 'identification' key if 'voiceprints' doesn't exist
+        voiceprints_result = out.get("identification", [])
+    
+    if not voiceprints_result:
         return None
-    return max(counts.items(), key=lambda kv: kv[1])[0]
+    
+    # For single-speaker clip, we expect entries in the result array
+    # Get the match and its confidence score
+    best_match = None
+    best_confidence = 0.0
+    
+    for vp_entry in voiceprints_result:
+        match_label = vp_entry.get("match")
+        if not match_label:
+            continue
+            
+        # Get confidence - could be in a 'confidence' object or directly as 'score'
+        confidence_obj = vp_entry.get("confidence", {})
+        if isinstance(confidence_obj, dict) and match_label in confidence_obj:
+            # Structure: {"confidence": {"John Doe": 86, ...}}
+            confidence_score = float(confidence_obj[match_label])
+        elif "score" in vp_entry:
+            # Alternative structure with direct score field
+            confidence_score = float(vp_entry.get("score", 0))
+        else:
+            # No confidence available, skip this entry
+            continue
+        
+        # Take the match with highest confidence
+        if confidence_score > best_confidence:
+            best_confidence = confidence_score
+            best_match = match_label
+    
+    # Only return match if confidence meets threshold
+    if best_match and best_confidence >= MIN_CONFIDENCE_SCORE:
+        return (best_match, best_confidence)
+    else:
+        return None
 
 def create_voiceprint_from_clip(clip_media_url: str) -> str:
     """
@@ -266,11 +307,14 @@ def main(filename: str):
         clip_media_url = upload_local_wav_to_media(clip_bytes, clip_key)
 
         # Identify against existing voiceprints
-        match = identify_clip(clip_media_url, voiceprints)
-        if match:
-            print(f"[match] {spk} -> {match}")
-            speaker_to_identity[spk] = match
+        match_result = identify_clip(clip_media_url, voiceprints)
+        if match_result:
+            match_label, confidence = match_result
+            print(f"[match] {spk} -> {match_label} (confidence: {confidence:.1f})")
+            speaker_to_identity[spk] = match_label
             continue
+        else:
+            print(f"[low confidence] {spk} match below threshold ({MIN_CONFIDENCE_SCORE:.1f}), creating new speaker")
 
         # No match => enroll new voiceprint
         new_label = f"person_{uuid.uuid4().hex[:8]}"
