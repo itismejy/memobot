@@ -1,0 +1,3 @@
+query_image,person_id,db_image,distance,matched
+detected_faces/face_00_red.jpg,person_2,face_database/person_2.png,0.02551156282522382,True
+detected_faces/face_01_green.jpg,person_1,face_database/person_1.png,0.24688968025398228,True

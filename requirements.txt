@@ -46,3 +46,16 @@ numpy
 python_speech_features
 scenedetect
 gdown
+
+deepface
+pandas
+
+# TensorFlow and dependencies (macOS compatible versions)
+tensorflow==2.19.0
+tensorflow-metal
+pyarrow==17.0.0
+
+tf-keras
+
+
+# Note: Python 3.12.11 is required
