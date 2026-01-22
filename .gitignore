@@ -5,6 +5,7 @@
 
 # twelvelabs raw data
 twelvelabs/raw_data/
+examples/twelvelabs/raw_data/
 
 # macOS
 .DS_Store
